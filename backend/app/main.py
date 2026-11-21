@@ -1,5 +1,7 @@
+import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from app.core.config import settings
 from app.api.router import api_router
 
@@ -9,7 +11,6 @@ app = FastAPI(
     openapi_url=f"{settings.API_V1_STR}/openapi.json"
 )
 
-# Enable CORS for frontend integration
 # Enable CORS for frontend integration
 app.add_middleware(
     CORSMiddleware,
@@ -23,6 +24,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Allow public access to sample & uploaded images
+if os.path.exists("storage"):
+    app.mount("/storage", StaticFiles(directory="storage"), name="storage")
 
 app.include_router(api_router, prefix=settings.API_V1_STR)
 
