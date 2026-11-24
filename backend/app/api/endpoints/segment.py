@@ -38,6 +38,11 @@ async def segment_image(
             contents = await file.read()
             pil_img = Image.open(io.BytesIO(contents)).convert('L')
             image_array = np.array(pil_img)
+            modality_info = {
+                "modality": "Uploaded Scan",
+                "target": "Target Lesion / Tumor",
+                "description": f"Custom uploaded scan ({file.filename})"
+            }
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Invalid image file: {str(e)}")
     else:
@@ -80,6 +85,10 @@ async def segment_image(
         "model_name": result["model_name"],
         "threshold": result["threshold"],
         "overlay_b64": result["overlay_b64"],
+        "original_b64": result.get("original_b64"),
+        "preprocessed_b64": result.get("preprocessed_b64"),
+        "orig_stats": result.get("orig_stats"),
+        "proc_stats": result.get("proc_stats"),
         "tumor_area_pixels": result["tumor_area_pixels"],
         "modality_info": modality_info,
         "metrics": metrics,

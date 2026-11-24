@@ -9,13 +9,36 @@ import QuantitativeReport from './components/QuantitativeReport';
 
 import { fetchModels, fetchSamples, runSegmentation } from './services/api';
 
+// Fallback sample definitions in case backend takes time to wake up
+const FALLBACK_SAMPLES = [
+  {
+    id: "brain_mri",
+    modality: "Brain MRI",
+    target: "Brain Tumor / Glioma",
+    description: "Axial T2/FLAIR brain MRI slice highlighting hyperintense intracranial lesion."
+  },
+  {
+    id: "lung_ct",
+    modality: "Chest CT",
+    target: "Pulmonary Nodule",
+    description: "Thoracic CT scan highlighting pulmonary nodular boundary."
+  },
+  {
+    id: "abdomen_ct",
+    modality: "Abdominal CT",
+    target: "Liver Tumors / Lesion",
+    description: "Abdominal cross-section displaying hepatic parenchyma."
+  }
+];
+
 export default function App() {
   const [activeTab, setActiveTab] = useState('diagnostic');
   const [models, setModels] = useState([]);
   const [selectedModel, setSelectedModel] = useState('attention_unet');
-  const [samples, setSamples] = useState([]);
+  const [samples, setSamples] = useState(FALLBACK_SAMPLES);
   const [selectedSampleId, setSelectedSampleId] = useState('brain_mri');
   const [customFile, setCustomFile] = useState(null);
+  const [customFilePreview, setCustomFilePreview] = useState(null);
 
   // Preprocessing states
   const [windowPreset, setWindowPreset] = useState('default');
@@ -33,18 +56,21 @@ export default function App() {
     async function initData() {
       try {
         const mRes = await fetchModels();
-        setModels(mRes.models || []);
+        if (mRes.models && mRes.models.length > 0) {
+          setModels(mRes.models);
+        }
 
         const sRes = await fetchSamples();
-        setSamples(sRes.samples || []);
-        setIsConnected(true);
-
-        // Run initial segmentation for first sample
         if (sRes.samples && sRes.samples.length > 0) {
+          setSamples(sRes.samples);
+          setIsConnected(true);
+          // Initial inference
           executeInference('brain_mri', 'attention_unet', null, 'default', false, 0.5);
+        } else {
+          setIsConnected(true);
         }
       } catch (err) {
-        console.warn("Backend API not reachable, running mock fallback", err);
+        console.warn("Backend API connecting...", err);
         setIsConnected(false);
       }
     }
@@ -70,8 +96,9 @@ export default function App() {
         apply_clahe: clahe
       });
       setSegmentResult(res);
+      setIsConnected(true);
     } catch (err) {
-      console.error("Segmentation error", err);
+      console.warn("Segmentation inference notice:", err);
     } finally {
       setIsLoading(false);
     }
@@ -102,9 +129,17 @@ export default function App() {
                   onSelectSample={(id) => {
                     setSelectedSampleId(id);
                     setCustomFile(null);
+                    setCustomFilePreview(null);
                     executeInference(id, selectedModel, null, windowPreset, applyClahe, threshold);
                   }}
                   onFileUpload={(file) => {
+                    // Create instant local preview so user sees the uploaded scan immediately
+                    const reader = new FileReader();
+                    reader.onload = (e) => {
+                      setCustomFilePreview(e.target.result);
+                    };
+                    reader.readAsDataURL(file);
+
                     setCustomFile(file);
                     executeInference(null, selectedModel, file, windowPreset, applyClahe, threshold);
                   }}
@@ -131,6 +166,9 @@ export default function App() {
                   isLoading={isLoading}
                   opacity={opacity}
                   setOpacity={setOpacity}
+                  customFilePreview={customFilePreview}
+                  windowPreset={windowPreset}
+                  applyClahe={applyClahe}
                 />
               </div>
             </div>

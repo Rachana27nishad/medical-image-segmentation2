@@ -3,6 +3,7 @@ import torch.nn.functional as F
 import numpy as np
 import cv2
 import base64
+import gc
 from typing import Dict, Any, Tuple, Optional
 from app.models.unet import UNet
 from app.models.attention_unet import AttentionUNet
@@ -10,26 +11,30 @@ from app.models.monai_models import MONAISegResNetWrapper
 from app.services.preprocessing import ImagePreprocessor
 
 class InferenceEngine:
-    """Multi-model Inference Engine for Medical Image Segmentation."""
+    """Memory-Optimized Multi-model Inference Engine for Cloud Free Tier."""
 
     def __init__(self):
         self.models = {}
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self._init_models()
+        self.device = torch.device("cpu")  # CPU execution for cloud reliability
 
-    def _init_models(self):
-        """Initialize segmentation model zoo."""
-        unet = UNet(n_channels=1, n_classes=2).to(self.device)
-        unet.eval()
-        self.models["unet"] = unet
+    def _get_model(self, model_name: str):
+        """Lazy load: Load only the requested model and purge previous memory."""
+        if model_name not in self.models:
+            self.models.clear()
+            gc.collect()
 
-        att_unet = AttentionUNet(n_channels=1, n_classes=2).to(self.device)
-        att_unet.eval()
-        self.models["attention_unet"] = att_unet
+            if model_name == "unet":
+                m = UNet(n_channels=1, n_classes=2).to(self.device)
+            elif model_name == "monai_segresnet":
+                m = MONAISegResNetWrapper(in_channels=1, out_channels=2).to(self.device)
+            else:
+                m = AttentionUNet(n_channels=1, n_classes=2).to(self.device)
+                model_name = "attention_unet"
 
-        monai_net = MONAISegResNetWrapper(in_channels=1, out_channels=2).to(self.device)
-        monai_net.eval()
-        self.models["monai_segresnet"] = monai_net
+            m.eval()
+            self.models[model_name] = m
+
+        return self.models[model_name]
 
     def run_inference(
         self,
@@ -40,11 +45,9 @@ class InferenceEngine:
         apply_clahe: bool = False
     ) -> Dict[str, Any]:
         """
-        Run segmentation model inference on input image array.
+        Run segmentation model inference on input image array with low memory footprint.
         """
-        if model_name not in self.models:
-            model_name = "attention_unet"
-        model = self.models[model_name]
+        model = self._get_model(model_name)
 
         # 1. Preprocessing
         processed_img = image_array.copy()
@@ -53,10 +56,26 @@ class InferenceEngine:
         if apply_clahe:
             processed_img = ImagePreprocessor.apply_clahe(processed_img)
 
+        # Calculate Intensity Statistics (Original vs Preprocessed)
+        orig_min = int(image_array.min())
+        orig_max = int(image_array.max())
+        orig_mean = round(float(image_array.mean()), 2)
+
+        proc_min = int(processed_img.min())
+        proc_max = int(processed_img.max())
+        proc_mean = round(float(processed_img.mean()), 2)
+
+        # Base64 encodings for Dual-View
+        _, orig_buf = cv2.imencode('.jpg', image_array)
+        orig_b64 = f"data:image/jpeg;base64,{base64.b64encode(orig_buf).decode('utf-8')}"
+
+        _, proc_buf = cv2.imencode('.jpg', processed_img)
+        proc_b64 = f"data:image/jpeg;base64,{base64.b64encode(proc_buf).decode('utf-8')}"
+
         # Normalize to [0, 1] for tensor input
         norm_img = ImagePreprocessor.normalize_min_max(processed_img)
-        
-        # Prepare tensor (Batch=1, Channels=1, H, W)
+
+        # Prepare tensor (Batch=1, Channels=1, H=256, W=256)
         orig_h, orig_w = norm_img.shape[:2]
         resized_img = ImagePreprocessor.resize_image(norm_img, (256, 256))
         tensor_in = torch.from_numpy(resized_img).unsqueeze(0).unsqueeze(0).float().to(self.device)
@@ -74,12 +93,18 @@ class InferenceEngine:
         # 3. Create Color Overlay & Contour Visualization
         overlay, overlay_b64 = self._create_overlay_image(image_array, binary_mask, target_prob_orig)
 
+        del tensor_in, logits, probs
+        gc.collect()
+
         return {
             "model_name": model_name,
             "threshold": threshold,
-            "prob_map": target_prob_orig.tolist(),
             "binary_mask": binary_mask,
             "overlay_b64": overlay_b64,
+            "original_b64": orig_b64,
+            "preprocessed_b64": proc_b64,
+            "orig_stats": {"min": orig_min, "max": orig_max, "mean": orig_mean},
+            "proc_stats": {"min": proc_min, "max": proc_max, "mean": proc_mean},
             "prob_min": float(target_prob_orig.min()),
             "prob_max": float(target_prob_orig.max()),
             "prob_mean": float(target_prob_orig.mean()),
@@ -93,19 +118,19 @@ class InferenceEngine:
         else:
             base_rgb = orig_img.copy()
 
-        # Highlight segmented mask in bright green
+        # Highlight segmented mask in bright mint green
         overlay = base_rgb.copy()
         mask_indices = mask > 0
-        overlay[mask_indices] = [0, 230, 115]  # Mint green
+        overlay[mask_indices] = [0, 230, 115]
 
-        # Blend base with overlay (70% base, 30% overlay)
+        # Blend base with overlay (65% base, 35% overlay)
         blended = cv2.addWeighted(base_rgb, 0.65, overlay, 0.35, 0)
 
         # Draw yellow contour line around mask boundaries
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        cv2.drawContours(blended, contours, -1, (255, 220, 0), 2)  # Bright yellow outline
+        cv2.drawContours(blended, contours, -1, (255, 220, 0), 2)
 
-        # Encode to JPEG Base64 string for immediate frontend visualizer rendering
+        # Encode to JPEG Base64 string for immediate frontend rendering
         _, buffer = cv2.imencode('.jpg', cv2.cvtColor(blended, cv2.COLOR_RGB2BGR))
         b64_str = base64.b64encode(buffer).decode('utf-8')
 
